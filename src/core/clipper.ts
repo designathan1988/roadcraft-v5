@@ -139,7 +139,8 @@ function martinezRun(kind: ClipType, a: MultiPoly, b: MultiPoly = []): MultiPoly
 
 /** Boolean set operations preserve outer/hole membership through PolyTree. */
 export function union(a: MultiPoly, b: MultiPoly = []): MultiPoly {
-  return compatibleRun(ClipType.Union, a, b);
+  // DO NOT give `b` as the clip: a run with no subject is empty, and `union([], b)` lost `b` (the far roads' bands never cut by those under them, every far street drawn in its kerb's grey, 2026-10-18).
+  return compatibleRun(ClipType.Union, [...a, ...b]);
 }
 
 export function difference(a: MultiPoly, b: MultiPoly): MultiPoly {
