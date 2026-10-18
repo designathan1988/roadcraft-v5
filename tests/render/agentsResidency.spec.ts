@@ -34,7 +34,7 @@ function worldWith(parked: readonly VehicleView[], traffic: readonly VehicleView
   const vehiclesIn = (_box: GroundBox, out: VehicleView[], which = 'all'): VehicleView[] => { out.length = 0; if (which === 'traffic') out.push(...traffic); return out; };
   const parkedCellsIn = (box: GroundBox, out: FleetCell<VehicleView>[]): FleetCell<VehicleView>[] => { out.length = 0; return grid.cellsNear(box.x0, box.y0, box.x1, box.y1, out); };
   const vehicles = new Map<number, VehicleView>(traffic.map((v) => [v.id, v] as const));
-  return { time: 0, traffic, vehicles, parked, isParked: (v: VehicleView) => parked.includes(v), pedViews: [], fleet: 0, vehiclesIn, parkedCellsIn } as unknown as SimClient;
+  return { time: 0, traffic, vehicles, parked, isParked: (v: VehicleView) => parked.includes(v), pedViews: [], onVehicleGone: null, vehiclesIn, parkedCellsIn } as unknown as SimClient;
 }
 
 

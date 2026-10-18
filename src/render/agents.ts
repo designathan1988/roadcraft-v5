@@ -1514,18 +1514,14 @@ export function createAgentMeshes(elevationAt: ElevationAt, onAssetsReady: () =>
   };
   /** The vehicles whose people were cast (`seatIdentity`), by id */
   const castVehicles = new Map<number, SimVehicle>();
-  /** The fleet's version `forgetCast` last looked at. */
-  let castFleet = -1;
-  /** The people of the vehicles gone from the world let go by the casting, when the fleet changed */
+  /** The people of a vehicle gone from the world let go by the casting, told by the client as it goes (DO NOT walk every vehicle cast at each change of the fleet). */
+  const forgetGone = (vehicle: SimVehicle): void => {
+    if (castVehicles.get(vehicle.id) !== vehicle) return;
+    castVehicles.delete(vehicle.id);
+    pedestrians.forgetCompany(vehicleCompany(vehicle), vehicle.id);
+  };
   const forgetCast = (world: SimClient): void => {
-    const fleet = world.fleet;
-    if (fleet === castFleet) return;
-    castFleet = fleet;
-    for (const [id, vehicle] of castVehicles) {
-      if (world.vehicles.get(id) === vehicle || world.isParked(vehicle)) continue;
-      castVehicles.delete(id);
-      pedestrians.forgetCompany(vehicleCompany(vehicle), id);
-    }
+    if (world.onVehicleGone !== forgetGone) world.onVehicleGone = forgetGone;
   };
   /** Who sits in (or steps out of) a seat: the seat's person, cast with the vehicle's company. */
   /** DO NOT make an identity for every seat drawn every frame: one, filled again (`drawClip` and `indexFor` read it in the call, keep nothing of it). */

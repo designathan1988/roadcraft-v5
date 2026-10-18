@@ -133,8 +133,8 @@ export class SimClient implements JournalReader {
   trafficSpeed = 0;
   trafficQueued = 0;
   readonly pedViews: PedView[] = [];
-  /** Moves whenever a traffic view came or went, or a parked one went (the casting forgets the people of those gone, `render/agents.ts`); DO NOT move it for a parked car told again. */
-  fleet = 0;
+  /** Told each view let go, traffic or parked, as it goes (the casting forgets its people, `render/agents.ts`): DO NOT make the casting walk every vehicle it cast to find the gone ones. */
+  onVehicleGone: ((view: VehicleView) => void) | null = null;
   /** Whether a view is one of the cars parked in their bays now. */
   isParked(view: VehicleView): boolean {
     return this.parkedById.get(view.id) === view;
@@ -162,7 +162,6 @@ export class SimClient implements JournalReader {
   }
 
   private dropParked(view: VehicleView): void {
-    this.fleet++;
     this.parkedById.delete(view.id);
     const at = this.parkedAt.get(view);
     if (at !== undefined) {
@@ -172,11 +171,13 @@ export class SimClient implements JournalReader {
     }
     this.parkedGrid.remove(view);
     this.settling.delete(view);
+    this.onVehicleGone?.(view);
   }
 
   /** Another map: every parked view let go at once. */
   private clearParked(): void {
-    if (this.parked.length) this.fleet++;
+    const gone = this.onVehicleGone;
+    if (gone) for (const view of this.parked) gone(view);
     this.parked.length = 0;
     this.parkedById.clear();
     this.parkedAt.clear();
@@ -656,7 +657,7 @@ export class SimClient implements JournalReader {
       let view = parked ? this.parkedById.get(id) : this.vehicles.get(id);
       if (!view) {
         view = newView(id);
-        if (parked) this.addParked(view); else { this.vehicles.set(id, view); this.fleet++; }
+        if (parked) this.addParked(view); else this.vehicles.set(id, view);
       }
       const r = rich?.get(id);
       if (r) {
@@ -697,7 +698,7 @@ export class SimClient implements JournalReader {
     }
     // Every traffic view read this tick: none gone, and none walked to find out.
     if (read !== this.vehicles.size) {
-      for (const [id, view] of this.vehicles) if (view.tickRead !== stamp) { this.vehicles.delete(id); this.trafficGrid.remove(view); this.fleet++; }
+      for (const [id, view] of this.vehicles) if (view.tickRead !== stamp) { this.vehicles.delete(id); this.trafficGrid.remove(view); this.onVehicleGone?.(view); }
     }
     this.trafficSpeed = speed;
     this.trafficQueued = queued;
@@ -800,6 +801,8 @@ export class SimClient implements JournalReader {
   }
 
   private clearViews(): void {
+    const gone = this.onVehicleGone;
+    if (gone) for (const view of this.vehicles.values()) gone(view);
     this.vehicles.clear();
     this.traffic.length = 0;
     this.trafficGrid.clear();

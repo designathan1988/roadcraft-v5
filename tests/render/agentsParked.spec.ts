@@ -34,7 +34,7 @@ function movingCar(id: number, x: number, y: number): VehicleView {
 /** The simulation's view `sync` reads (`SimClient`): the traffic, the parked cars, nobody walking. */
 function worldWith(parked: readonly VehicleView[], traffic: readonly VehicleView[] = []): SimClient {
   const vehicles = new Map<number, VehicleView>(traffic.map((v) => [v.id, v] as const));
-  return { time: 0, traffic, vehicles, parked, isParked: (v: VehicleView) => parked.includes(v), pedViews: [], fleet: 0 } as unknown as SimClient;
+  return { time: 0, traffic, vehicles, parked, isParked: (v: VehicleView) => parked.includes(v), pedViews: [], onVehicleGone: null } as unknown as SimClient;
 }
 
 /** The network `sync` reads: only its document's diary of changes. */

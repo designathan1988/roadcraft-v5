@@ -51,17 +51,18 @@ describe("the page's reading of the fleet", () => {
     const client = new SimClient(new RoadDoc());
     tick(client, [{ id: 1, x: 0, y: 0, free: 0 }, { id: 2, x: 10, y: 0, free: 0 }, { id: 3, x: 20, y: 0, free: 0 }]);
     const two = client.vehicles.get(2)!;
-    const fleet = client.fleet;
-    // Vehicle 1 gone, 4 come: 2 and 3 kept as they were.
+    const gone: number[] = [];
+    client.onVehicleGone = (view) => gone.push(view.id);
+    // Vehicle 1 gone, 4 come: 2 and 3 kept as they were; only 1 told gone.
     tick(client, [{ id: 2, x: 11, y: 0, free: 0 }, { id: 3, x: 21, y: 0, free: 0 }, { id: 4, x: 30, y: 0, free: 0 }]);
     expect([...client.vehicles.keys()].sort()).toEqual([2, 3, 4]);
     expect(client.vehicles.get(2)).toBe(two);
-    expect(client.fleet).toBe(fleet + 2);
+    expect(gone).toEqual([1]);
     expect(client.vehiclesIn({ x0: -5, y0: -5, x1: 5, y1: 5 }, [])).toEqual([]);
     // The same vehicles again: none let go.
     tick(client, [{ id: 2, x: 12, y: 0, free: 0 }, { id: 3, x: 22, y: 0, free: 0 }, { id: 4, x: 31, y: 0, free: 0 }]);
     expect(client.vehicles.size).toBe(3);
-    expect(client.fleet).toBe(fleet + 2);
+    expect(gone).toEqual([1]);
     // All gone.
     tick(client, []);
     expect(client.vehicles.size).toBe(0);
@@ -82,13 +83,14 @@ describe("the page's reading of the fleet", () => {
     tick(client, [], told(true, [{ id: 1, x: 0 }, { id: 2, x: 10 }, { id: 3, x: 20 }]));
     const one = client.parked.find((v) => v.id === 1)!;
     expect(one.color).toBe('#2f6a86');
-    const fleet = client.fleet;
-    // A car told again is the same view, moved; the fleet does not move for it.
+    const gone: number[] = [];
+    client.onVehicleGone = (view) => gone.push(view.id);
+    // A car told again is the same view, moved, and not told gone; 3 told gone.
     tick(client, [], told(false, [{ id: 1, x: 5 }, { id: 3, x: 0, gone: true }]));
     expect(client.parked.find((v) => v.id === 1)).toBe(one);
     expect(one.free).toMatchObject({ x: 5, lot: null });
     expect(client.parked.map((v) => v.id).sort()).toEqual([1, 2]);
-    expect(client.fleet).toBe(fleet + 1);
+    expect(gone).toEqual([3]);
     // Every car standing told: 2 not named is let go, 1 kept as it was, 4 made.
     tick(client, [], told(true, [{ id: 1, x: 6 }, { id: 4, x: 30 }]));
     expect(client.parked.map((v) => v.id).sort()).toEqual([1, 4]);
