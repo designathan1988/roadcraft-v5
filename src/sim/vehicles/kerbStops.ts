@@ -91,16 +91,26 @@ const SEAT_STRIDE = Math.max(8, ...ARCHETYPES.map((a) => a.seats));
 /** What `seatPerson` reads of a vehicle (the simulation's own, or the page's view of it, `host/simClient.ts`). */
 type Seated = { readonly id: number; readonly people: readonly number[]; readonly peopleAge: readonly (PersonAgeClass | undefined)[]; readonly archetype: { readonly doorsPerSide: number } };
 
-export function seatPerson(v: Seated, seat: number): { seed: number; gender: PersonGender; ageClass: PersonAgeClass } {
+/** The person a seat holds, as `seatPerson` reads it. */
+export interface SeatPerson { seed: number; gender: PersonGender; ageClass: PersonAgeClass }
+
+export function seatPerson(v: Seated, seat: number): SeatPerson {
+  return seatPersonInto(v, seat, { seed: 0, gender: 'm', ageClass: 'adult' });
+}
+
+/** `seatPerson` written into `out`: DO NOT make an object a seat a frame (the page draws every seated person each frame). */
+export function seatPersonInto(v: Seated, seat: number, out: SeatPerson): SeatPerson {
   const picked = v.people[seat];
   const seed = picked ?? PERSON_BASE + v.id * SEAT_STRIDE + seat;
   const hash = personHash(seed);
-  const gender: PersonGender = (hash >>> 3) & 1 ? 'f' : 'm';
-  if (picked !== undefined) return { seed, gender, ageClass: v.peopleAge[seat] ?? 'adult' };
+  out.seed = seed;
+  out.gender = (hash >>> 3) & 1 ? 'f' : 'm';
+  if (picked !== undefined) { out.ageClass = v.peopleAge[seat] ?? 'adult'; return out; }
   // A family car: about one back seat in four carries a child, and never the driver's seat or the front passenger's.
   const perSide = v.archetype.doorsPerSide;
   const back = perSide > 1 && seat % perSide !== 0;
-  return { seed, gender, ageClass: back && ((hash >>> 7) & 3) === 0 ? 'child' : 'adult' };
+  out.ageClass = back && ((hash >>> 7) & 3) === 0 ? 'child' : 'adult';
+  return out;
 }
 
 /** Fixed at spawn: which seats are taken, and whether the trip has an errand. */
