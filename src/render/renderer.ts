@@ -588,8 +588,6 @@ export function createSceneRenderer(
   };
   /** Roads just laid, to blink once their heights are solved (`flashRoads`, `draw`). */
   const pendingRoadFlash: SegmentId[] = [];
-  /** Behind the map while building it (`draw`): a plain dark blue. */
-  const MAP_BACKGROUND = new Color(0x0c1a2c);
   const scene = new Scene();
   watchShadowDepth(scene);
   // The root never moves.
@@ -1178,8 +1176,6 @@ export function createSceneRenderer(
     roomLights.push(light);
   }
   let lampsKey = '';
-  /** The sky's mesh (`environment.ts`), found once by name (`draw`). */
-  let skyMesh: Object3D | null = null;
   let lastDark = -1;
   /** The building revision the ground was last graded for. */
   let gradedFor = -1;
@@ -2967,13 +2963,7 @@ export function createSceneRenderer(
         if (t > f.end) { scene.remove(f.mesh); f.mesh.geometry.dispose(); gridFlashes.splice(i, 1); }
         else onAssetsReady();
       }
-      // The map stands on a plain dark blue
-      {
-        // Found once: looked up by name it walked the whole scene every frame.
-        skyMesh ??= scene.getObjectByName('sky') ?? null;
-        if (skyMesh) skyMesh.visible = false;
-        scene.background = MAP_BACKGROUND;
-      }
+      // DO NOT hide the sky behind a plain dark blue: past the map's edge and over the horizon the player saw a navy void at noon (playtest 02b/22-turned, 2026-10-18); the sky (`environment.ts`) follows the hour.
       // The wind blows in real time: a paused simulation is still a windy day.
       windClock += Math.min(0.1, Math.max(0, delta));
       advanceWind(windClock);
