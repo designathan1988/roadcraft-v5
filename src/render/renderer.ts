@@ -2518,7 +2518,7 @@ export function createSceneRenderer(
       return roadsAndNear;
     },
     farBakeEnv() {
-      return { ...buildings.farEnv(), massPrefix: buildings.far.bakePrefix, roadPrefix: farRoads.bakePrefix, roadGround: farRoadGround(), nearPrefix: nearTiles.bakePrefix };
+      return { ...buildings.farEnv(), massPrefix: buildings.far.bakePrefix, nearPrefix: nearTiles.bakePrefix };
     },
     beginLoad() {
       reveal.begin();

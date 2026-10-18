@@ -69,12 +69,12 @@ describe("a tile's far levels kept by its maker", () => {
     expect(writes[0]!.puts).toEqual(['m:t', 'm:t:plate', 'm:t:boxes', 'r:t']);
   });
 
-  it("are gathered from both bakes in the maker's worker, then kept in one call", async () => {
+  it("are gathered from its bakes in the maker's worker, then kept in one call", async () => {
     const { readFileSync } = await import('node:fs');
     const worker = readFileSync('src/cityTile.worker.ts', 'utf8');
     const keepFar = worker.slice(worker.indexOf('async function keepFar('), worker.indexOf('/** The streamed tile built'));
     expect(keepFar).toMatch(/keepTileFar\(.*into\.far\)/);
-    expect(keepFar).toMatch(/keepTileFarRoads\(.*into\.roads\)/);
+    expect(keepFar).toMatch(/keepTileNearBuildings\(.*into\.near\)/);
     expect(keepFar.match(/keepDerivedQueuedMany\(/g)).toHaveLength(1);
   });
 });

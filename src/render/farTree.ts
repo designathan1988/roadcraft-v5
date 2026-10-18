@@ -144,6 +144,33 @@ export class FarTree<P> implements FarTiles {
     this.changed = true;
     // DO NOT bake anything but it and its ancestors again: the others' versions stand (a plan's node it falls under takes its tiles' and the plan's).
     for (let n: FarNode | null = leaf; n; n = n.parent) n.sig = null;
+    this.touchAround(leaf);
+  }
+
+  /** The tiles round a tile stored, each at its version: what its own level reads besides it (`FarKind.readsAround`). */
+  private aroundOf(n: FarNode): { key: number; version: number }[] {
+    const out: { key: number; version: number }[] = [];
+    for (let dj = -1; dj <= 1; dj++) {
+      for (let di = -1; di <= 1; di++) {
+        if (di === 0 && dj === 0) continue;
+        const key = tileKey(n.i + di, n.j + dj);
+        const leaf = this.leaves.get(key);
+        if (leaf) out.push({ key, version: leaf.version });
+      }
+    }
+    return out;
+  }
+
+  /** A tile stored, changed or gone: the tiles round it that read it (`readsAround`) asked again at their new version, with their ancestors. */
+  private touchAround(leaf: FarNode): void {
+    if (!this.kind.readsAround) return;
+    for (let dj = -1; dj <= 1; dj++) {
+      for (let di = -1; di <= 1; di++) {
+        if (di === 0 && dj === 0) continue;
+        const near = this.leaves.get(tileKey(leaf.i + di, leaf.j + dj));
+        for (let n: FarNode | null = near ?? null; n; n = n.parent) n.sig = null;
+      }
+    }
   }
 
   loadedChanged(tile: number): void {
@@ -292,6 +319,7 @@ export class FarTree<P> implements FarTiles {
 
   private unstore(tile: number, leaf: FarNode): void {
     this.leaves.delete(tile);
+    this.touchAround(leaf);
     for (let n: FarNode | null = leaf; n;) {
       const up: FarNode | null = n.parent;
       n.tiles--;
@@ -325,7 +353,13 @@ export class FarTree<P> implements FarTiles {
   private sigOf(n: FarNode): string {
     if (n.sig !== null) return n.sig;
     if (n.tiles === 0) return (n.sig = PLAN_SIG);
-    if (n.k === 0) return (n.sig = String(n.version));
+    if (n.k === 0 && !this.kind.readsAround) return (n.sig = String(n.version));
+    if (n.k === 0) {
+      // Its own version and those of the tiles round it it reads.
+      const around = new Digest();
+      for (const t of this.aroundOf(n)) around.add(t.key).add(t.version);
+      return (n.sig = `${n.version}.${around.value().toString(36)}`);
+    }
     const d = new Digest();
     for (const c of n.children) d.addText(c && c.tiles > 0 ? this.sigOf(c) : '-');
     return (n.sig = d.value().toString(36));
@@ -614,13 +648,15 @@ export class FarTree<P> implements FarTiles {
     });
   }
 
-  private submit(n: FarNode, records?: TileRecords): void {
+  private submit(n: FarNode, records?: TileRecords, aroundRecords?: readonly TileRecords[]): void {
     const sig = n.asked!;
     const job: FarTreeJob = {
       node: n.key, k: n.k, i: n.i, j: n.j, sig, want: n.askedWant, prefix: this.keyPrefix,
       ...(n.k > 0 && sig !== PLAN_SIG ? { children: this.childrenOf(n) } : {}),
       ...(this.planning && this.plan ? { plan: this.plan } : {}),
       ...(records ? { records } : {}),
+      ...(n.k === 0 && sig !== PLAN_SIG && this.kind.readsAround ? { around: this.aroundOf(n) } : {}),
+      ...(aroundRecords ? { aroundRecords } : {}),
       // DO NOT carry a tile's records through the page when the worker can read the store: the page held every tile read while it waited for a worker.
       ...(!records && n.k === 0 && this.source?.workersRead ? { store: this.source.workersRead } : {}),
     };
@@ -719,10 +755,12 @@ export class FarTree<P> implements FarTiles {
       if (!source) { n.queued = true; this.fetchQueue.unshift(n); return; }
       this.fetching++;
       const tile = tileKey(n.i, n.j);
-      void source.records(tile).then((records) => {
+      // A kind that reads the tiles round it: theirs read too, in `aroundOf`'s order (one the store no longer has, empty).
+      const around = n.k === 0 && this.kind.readsAround ? this.aroundOf(n) : [];
+      void Promise.all([source.records(tile), ...around.map((t) => source.records(t.key))]).then(([records, ...round]) => {
         if (this.nodes.get(n.key) !== n || n.asked !== sig) { this.fetching--; this.pump(); return; }
         // DO NOT hold the parents waiting for a tile the store no longer has: baked empty.
-        this.submit(n, records ?? emptyRecords(tile, n.version));
+        this.submit(n, records ?? emptyRecords(tile, n.version), around.length ? round.map((r, k) => r ?? emptyRecords(around[k]!.key, around[k]!.version)) : undefined);
       }, (error: unknown) => {
         this.fetching--;
         if (this.nodes.get(n.key) === n && n.asked === sig) {

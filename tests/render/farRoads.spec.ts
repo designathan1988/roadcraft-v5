@@ -13,7 +13,7 @@ import { MeshBasicMaterial, type Mesh } from 'three';
 import type { SceneMaterials } from '@render/materials';
 import { marksRoadSection } from '@render/mesh/roadEdges';
 import { passLook, surfaceLook } from '@render/roadSurfaces';
-import { type FarRoadCache, type FarRoadMesh, STREET_MEANS, bakeTileRoads, farRoadTones, runFarRoadJob, tileNetwork } from '@render/farRoadTiles';
+import { type FarRoadCache, type FarRoadMesh, STREET_MEANS, bakeTileRoads, farRoadTones, runFarRoadJob, tileNetwork, tileShare } from '@render/farRoadTiles';
 import type { FarTreeJob, FarTreeRun } from '@render/farTree';
 import { surfaceTexels } from '@render/mesh/textureBaker';
 import { CURB_BAND, Level } from '@world/roadTypes';
@@ -171,6 +171,54 @@ describe('a tile of roads baked from the store', () => {
       expect(mesh!.height[v]!).toBeGreaterThan(0);
       expect(mesh!.height[v]!).toBeLessThanOrEqual(m(0.15) + 1e-6);
       expect(mesh!.normal[v * 4 + 1]).toBe(127);
+    }
+  });
+
+  it('draws each point of a road in one band only: the kerb and the footway never over the carriageway (every far street in its kerb grey, 2026-10-18)', () => {
+    for (const type of [1, 2]) {
+      const key = tileKey(0, 0), base = tileIdBase(key);
+      const nodes = [{ id: base, x: 0.2 * TILE, y: 0.5 * TILE }, { id: base + 1, x: 0.8 * TILE, y: 0.5 * TILE }];
+      const mesh = bakeTileRoads({ ...emptyRecords(key, 1), nodes, segments: [{ id: base + 100, a: base, b: base + 1, type, curve: null }] })!;
+      const width = tileNetwork({ ...emptyRecords(key, 1), nodes, segments: [{ id: base + 100, a: base, b: base + 1, type, curve: null }] }).ribbons.values().next().value!.road.width;
+      const px = (v: number): number => mesh.ox + mesh.xz[v * 2]! / mesh.q, py = (v: number): number => mesh.oy + mesh.xz[v * 2 + 1]! / mesh.q;
+      for (let x = 0.3 * TILE; x < 0.7 * TILE; x += 23.7) {
+        for (let dy = -width / 2 + 0.4; dy < width / 2 - 0.4; dy += 1.3) {
+          const tones = new Set<number>();
+          for (let t = 0; t < mesh.index.length; t += 3) {
+            const a = mesh.index[t]!, b = mesh.index[t + 1]!, c = mesh.index[t + 2]!;
+            const d = (px(b) - px(a)) * (py(c) - py(a)) - (py(b) - py(a)) * (px(c) - px(a));
+            if (d === 0) continue;
+            const qx = x + 0.013, qy = 0.5 * TILE + dy + 0.017;
+            const u = ((px(b) - qx) * (py(c) - qy) - (py(b) - qy) * (px(c) - qx)) / d;
+            const w = ((px(c) - qx) * (py(a) - qy) - (py(c) - qy) * (px(a) - qx)) / d;
+            if (u >= 0 && w >= 0 && 1 - u - w >= 0) tones.add(mesh.color[a * 4]!);
+          }
+          expect([...tones], `type ${type} at ${x.toFixed(0)}, ${dy.toFixed(1)}`).toEqual([mesh.color[hit(mesh, x + 0.013, 0.5 * TILE + dy + 0.017) * 4]]);
+          expect(mesh.color[hit(mesh, x + 0.013, 0.5 * TILE + dy + 0.017) * 4]).toBeLessThan(100);
+        }
+      }
+    }
+  });
+
+  it('shares a road on the border of two tiles as their near levels do: each point of it drawn by exactly one far level (the border avenue gone at a jump, 2026-10-18)', () => {
+    // A street along the border between tile (0,0) and (0,1), in the south tile's records alone.
+    const south = tileKey(0, 0), north = tileKey(0, 1), base = tileIdBase(south);
+    const nodes = [{ id: base, x: 0.2 * TILE, y: TILE }, { id: base + 1, x: 0.8 * TILE, y: TILE }];
+    const southRoads: TileRecords = { ...emptyRecords(south, 1), nodes, segments: [{ id: base + 100, a: base, b: base + 1, type: 1, curve: null }] };
+    const northRoads = emptyRecords(north, 1);
+    const southMesh = bakeTileRoads(southRoads, [northRoads]);
+    const northMesh = bakeTileRoads(northRoads, [southRoads]);
+    const top = tileShare(south)[3];
+    expect(tileShare(north)[1]).toBe(top);
+    for (let f = 0.3; f <= 0.71; f += 0.1) {
+      for (const across of [-m(4), -m(1.5), m(1.5), m(4)]) {
+        const x = f * TILE, y = TILE + across;
+        if (Math.abs(y - top) < m(0.5)) continue;
+        const inSouth = southMesh !== null && hit(southMesh, x, y) >= 0;
+        const inNorth = northMesh !== null && hit(northMesh, x, y) >= 0;
+        expect(inSouth !== inNorth, `${f.toFixed(1)}, ${across}`).toBe(true);
+        expect(inSouth, `${f.toFixed(1)}, ${across}`).toBe(y < top);
+      }
     }
   });
 
@@ -471,7 +519,7 @@ describe('the far roads chosen top down', () => {
     roads.dispose();
   });
 
-  it('bakes again only the tile whose version changed and its ancestors', async () => {
+  it('bakes again only the tile whose version changed, the tiles round it that read it, and their ancestors', async () => {
     const cache = memoryCache();
     const tiles = world();
     const far = new FarRoads(() => null, runner(cache), 'test:');
@@ -485,14 +533,21 @@ describe('the far roads chosen top down', () => {
     const changed = tileKey(1, 0);
     tiles.set(changed, crossTile(1, 0, 2));
     far.stored(changed, 2);
-    const chain: string[] = [];
-    for (let k = 0; k <= TOP_LEVEL; k++) chain.push(`test:${farKey(k, Math.floor(1 / 2 ** k), 0)}`);
+    // The tile and every stored tile round it (each reads it, `tileShare`), with their ancestors.
+    const chain = new Set<string>();
+    for (let dj = -1; dj <= 1; dj++) {
+      for (let di = -1; di <= 1; di++) {
+        if (!tiles.has(tileKey(1 + di, dj))) continue;
+        for (let k = 0; k <= TOP_LEVEL; k++) chain.add(`test:${farKey(k, Math.floor((1 + di) / 2 ** k), Math.floor(dj / 2 ** k))}`);
+      }
+    }
+    const top = `test:${farKey(TOP_LEVEL, 0, 0)}`;
     // The old top level stands while the new one is made (nothing waits): watched until the top is kept again, then a while longer.
-    await until(fromAfar, () => cache.puts.slice(before).includes(chain[TOP_LEVEL]!));
+    await until(fromAfar, () => cache.puts.slice(before).includes(top));
     let turns = 0;
     await until(fromAfar, () => ++turns > 50);
-    const again = cache.puts.slice(before).sort();
-    expect(again).toEqual(chain.sort());
+    const again = [...new Set(cache.puts.slice(before))].sort();
+    expect(again).toEqual([...chain].sort());
     far.dispose();
   });
 });

@@ -8,7 +8,7 @@ import type { TileRecords } from '@world/doc';
 import { buildStreamTile, buildStreamTilePair } from '@editor/wholeMapTile';
 import { type FarCache, type FarJob, bakeTileMasses, farKey, keepTileFar, runFarJob, tileSquare } from '@render/buildings/farTiles';
 import { TILE_DETAIL } from '@render/buildings/massing';
-import { type FarRoadCache, type FarRoadJob, bakeTileRoads, keepTileFarRoads, runFarRoadJob, tileRoads } from '@render/farRoadTiles';
+import { type FarRoadCache, type FarRoadJob, bakeTileRoads, runFarRoadJob, tileRoads } from '@render/farRoadTiles';
 import { tileBuildingsOf } from '@world/growth/grownRows';
 import type { JobScope } from '@/jobs/jobScope';
 import { type StreamTileAnswer, type StreamTileAsk, serve } from '@/cityTile.worker';
@@ -218,20 +218,21 @@ describe("a tile's far levels kept where it is made", () => {
     expect((await runFarJob({ ...job, sig: String(version + 1) }, cache)).kind).toBe('farRecords');
   }, 10_000);
 
-  it("the roads' level 0 is found by the page's job, the mesh the stored roads bake to", async () => {
+  it("the roads' level 0 is baked by the page's job from the tile's roads, the mesh they bake to", async () => {
     const cache = memory();
     const job: FarRoadJob = { node: farKey(0, i, j), k: 0, i, j, sig: String(version), want: true, prefix };
+    // No records and no store: the page is asked for them.
     expect((await runFarRoadJob(job, cache)).kind).toBe('farRecords');
-    expect(await keepTileFarRoads(tileRoads(pair.records), version, null, prefix, cache)).toBe(true);
-    const reply = await runFarRoadJob(job, cache);
+    const reply = await runFarRoadJob({ ...job, records: tileRoads(pair.records), around: [], aroundRecords: [] }, cache);
     expect(reply.kind).toBe('far');
     if (reply.kind !== 'far') return;
     expect(reply.payload).toEqual(bakeTileRoads(tileRoads(pair.records)));
+    // Kept: asked again at its version, nothing read.
+    expect((await runFarRoadJob(job, cache)).kind).toBe('far');
   }, 10_000);
 
   it('keeps nothing where the far tree keeps nothing', async () => {
     const cache = memory();
     expect(await keepTileFar(pair.full, version, env, null, cache)).toBe(false);
-    expect(await keepTileFarRoads(tileRoads(pair.records), version, null, null, cache)).toBe(false);
   });
 });

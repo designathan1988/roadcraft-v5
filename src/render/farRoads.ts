@@ -110,7 +110,7 @@ const nearRoadsOf = (records: NonNullable<FarTreeJob['records']> | null): NearTi
 
 /** A tree's job as the far roads' job: the tile the page read (the desktop's store) cut to its roads (`tileRoads`), its buildings never posted; the store's map kept for the worker to read the tile itself; a near level's with the page's look of the roads and the ground (`kit`). */
 export function farRoadJob(tree: FarTreeJob, kit?: NearRoadKit | null, ground: SharedGroundData | null = null): FarRoadJob {
-  const { records, near, ...job } = tree;
+  const { records, near, aroundRecords, ...job } = tree;
   if (near) {
     if (!kit) throw new Error('a near level asked of roads with no near kit');
     return {
@@ -122,7 +122,7 @@ export function farRoadJob(tree: FarTreeJob, kit?: NearRoadKit | null, ground: S
       },
     };
   }
-  return records ? { ...job, records: tileRoads(records) } : job;
+  return { ...job, ...(records ? { records: tileRoads(records) } : {}), ...(aroundRecords ? { aroundRecords: aroundRecords.map(tileRoads) } : {}) };
 }
 
 /** A far roads job's place in the queue (lower first): a far level in the far levels' band; a near level of a tile the page holds edited before anything (`cellPool.ts` EDIT_TIER): it draws what the player just did. */
@@ -304,6 +304,8 @@ export class FarRoads extends FarTree<RoadPayload> {
       name: 'roads', land: (data) => farRoadMesh(data as FarRoadMesh, material), levelError: farLevelError,
       // Drawn from the plan where no tile is made yet, down to a tile (`farRoadTiles.ts` bakePlanRoads): the roads go on past the tiles made, as the buildings do.
       planFrom: 0,
+      // A tile's far level is its near level's share of the ground (`farRoadTiles.ts` tileShare), read with the tiles round it.
+      readsAround: true,
       // Where the buildings' cells come near (`massCells.ts` FAR_ERROR): the roads under them with their own detail.
       // Its simplified level near, its full detail where the simplification would show (`roadLodPure.ts` COARSE_ERROR); every tile drawn here, those of the page's document too: one way for the roads.
       ...(near ? {

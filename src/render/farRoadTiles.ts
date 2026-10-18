@@ -1,6 +1,6 @@
 import { MeshoptSimplifier } from 'meshoptimizer';
-import { type MultiPoly, difference, union } from '@core/clipper';
-import { RoadDoc } from '@world/doc';
+import { Digest } from '@core/digest';
+import { type MultiPoly, difference, intersection, union } from '@core/clipper';
 import type { NodeId, SegmentId } from '@world/ids';
 import { Network, type SegmentRibbon } from '@world/network';
 import { FOOTWAY_RISE, Level, ROAD_TYPES, halfWidth, roadType } from '@world/roadTypes';
@@ -9,14 +9,15 @@ import type { SurfaceLevel } from '@world/roadTypes';
 import { levelRingsOf } from '@world/surfaces';
 import { TILE, tileKey, tileOfKey } from '@world/tiles';
 import type { TileRecords } from '@world/doc';
-import { METERS_PER_UNIT, m } from '@world/units';
+import { m } from '@world/units';
 import { derivedCacheOpen, keepDerivedDurably, readDerived } from './derivedCache';
 import { surfaceShape } from './mesh/tileShape';
-import { PLAN_SIG, farKey, farNode, planKey, readStored } from './buildings/farGrid';
+import { PLAN_SIG, farNode, planKey, readStored } from './buildings/farGrid';
 import { medianOf } from './roadSurfaceRings';
 import { ASPHALT_REFERENCE, CARRIAGEWAY_COLOUR, FOOTWAY_TINT } from './roadTones';
 import { type SharedGroundData, sharedGroundReaders } from './sharedGround';
-import { type NearRoadMesh, type NearRoadWant, nearRoadBuffers, runNearRoadJob } from './nearRoadTiles';
+import { type NearRoadMesh, type NearRoadWant, type NearTileRoads, nearRoadBuffers, nearRoadDoc, runNearRoadJob } from './nearRoadTiles';
+import { TILE as SURFACE_TILE, TILE_ORIGIN as SURFACE_ORIGIN } from './roadSurfaceInputs';
 
 /** THE ROADS FAR FROM THE CAMERA, BAKED PER TILE IN WORKERS FROM THE TILE STORE (CLAUDE.md "Streaming world"): nothing of their records on the page */
 /** A tile's roads built alone (its segments and borrowed ends, as `editor/wholeMapTile.ts` builds a tile), drawn flat on the ground as one mesh: carriageways, kerbs, footways and medians, each the colour its near material reads from afar */
@@ -178,8 +179,8 @@ function emitBand(out: Builder, shape: MultiPoly, band: Band, groundAt: (x: numb
   }
 }
 
-/** @rebuild Every road of ONE TILE's network (`tileNetwork`, built for this bake from the tile's records), never the map's. THE BANDS OF A TILE'S ROADS: each road's carriageway (its class's or its paving's tone), kerb, footway (its material's) and median; each junction the tile owns, its plate in its widest road's tone */
-function tileBands(net: Network, owned: ReadonlySet<number>): Band[] {
+/** @rebuild Every road a tile's bake reads (`nearRoadDoc`: its own and its neighbours' within reach), never the map's. THE BANDS OF A TILE'S ROADS: each road's carriageway (its class's or its paving's tone), kerb, footway (its material's) and median; each junction, its plate in its widest road's tone */
+function tileBands(net: Network): Band[] {
   const tones = farRoadTones();
   const bands = new Map<string, { order: number; tone: readonly [number, number, number]; lift: number; rings: MultiPoly }>();
   const add = (key: string, order: number, tone: readonly [number, number, number], lift: number, rings: MultiPoly): void => {
@@ -212,9 +213,8 @@ function tileBands(net: Network, owned: ReadonlySet<number>): Band[] {
       add('mk', 1, tones.kerb, RAISED_LIFT, [median.kerb]);
     }
   }
+  // Every junction read: the tile's share cuts what is not its own (`tileShare`), and every node within the share's reach is read whole (`nearRoadDoc`).
   for (const [node, byLevel] of net.junctions) {
-    // A junction on a borrowed end is its own tile's to draw.
-    if (!owned.has(node)) continue;
     let widest: SegmentRibbon | null = null;
     for (const id of net.doc.node(node)?.incident ?? []) {
       const ribbon = net.ribbons.get(id);
@@ -240,35 +240,40 @@ export type TileRoads = Pick<TileRecords, 'key' | 'nodes' | 'borrowedNodes' | 's
 export const tileRoads = (records: TileRoads): TileRoads =>
   ({ key: records.key, nodes: records.nodes, borrowedNodes: records.borrowedNodes, segments: records.segments });
 
-/** The tile's roads built alone: its segments and the ends it borrows, as the page's document would load it (`RoadDoc.loadTile`), with no neighbour. */
-export function tileNetwork(records: TileRoads): Network {
-  const owned = new Set(records.nodes.map((n) => n.id));
-  const doc = RoadDoc.fromJSON({
-    version: 1, unit: METERS_PER_UNIT,
-    nodes: [...records.nodes, ...records.borrowedNodes.filter((n) => !owned.has(n.id))],
-    segments: records.segments,
-  }, { repair: false });
-  const net = new Network(doc);
+/** THE SAME SHARE OF THE GROUND AS THE TILE'S NEAR LEVEL (`nearRoadTiles.ts`: a 76.8 m surface tile is the 1 km tile's its centre lies in): its square snapped to the surface tiles, [x0, y0, x1, y1]. DO NOT share a tile's roads by who owns them: a border avenue was the north tile's far level and the south tile's near level, and with one tile at each level neither drew it (cars on the grass after a jump, 2026-10-18). */
+export function tileShare(key: number): readonly [number, number, number, number] {
+  const { i, j } = tileOfKey(key);
+  const first = (edge: number): number => SURFACE_ORIGIN + Math.ceil((edge - SURFACE_ORIGIN) / SURFACE_TILE - 0.5) * SURFACE_TILE;
+  return [first(i * TILE), first(j * TILE), first((i + 1) * TILE), first((j + 1) * TILE)];
+}
+
+/** The roads a tile's far bake reads, as its near bake reads them (`nearRoadDoc`): its own, its neighbours' that reach it, and those meeting their ends. */
+export function tileNetwork(records: TileRoads, around: readonly TileRoads[] = []): Network {
+  const asNear = (t: TileRoads): NearTileRoads => ({ key: t.key, nodes: t.nodes, borrowedNodes: t.borrowedNodes, segments: t.segments, gates: [] });
+  const net = new Network(nearRoadDoc(asNear(records), around.map(asNear), 'classic'));
   net.rebuild();
   return net;
 }
 
 const FLAT = (): number => 0;
 
-/** A TILE'S ROADS FROM ITS RECORDS ALONE, as one mesh simplified to a tile's error; null with no road seen */
-export function bakeTileRoads(records: TileRoads, groundAt: (x: number, y: number) => number = FLAT): FarRoadMesh | null {
-  if (records.segments.length === 0) return null;
-  const net = tileNetwork(records);
+/** A TILE'S FAR ROADS: every road band its share of the ground holds (`tileShare`), read from it and its neighbours (`around`, the eight round it), as one mesh simplified to a tile's error; null with no road seen */
+export function bakeTileRoads(records: TileRoads, around: readonly TileRoads[] = [], groundAt: (x: number, y: number) => number = FLAT): FarRoadMesh | null {
+  if (records.segments.length === 0 && around.every((t) => t.segments.length === 0)) return null;
+  const net = tileNetwork(records, around);
+  const [sx0, sy0, sx1, sy1] = tileShare(records.key);
+  const share: MultiPoly = [[[[sx0, sy0], [sx1, sy0], [sx1, sy1], [sx0, sy1]]]];
   const out = new Builder();
   // Each band where none before it lies (the carriageway over the kerb over the footway, as `world/surfaces.ts` `bands` cuts them).
   let covered: MultiPoly = [];
-  for (const band of tileBands(net, new Set(records.nodes.map((n) => n.id)))) {
-    const own = union(band.rings);
+  for (const band of tileBands(net)) {
+    const own = intersection(union(band.rings), share);
+    if (!own.length) continue;
     emitBand(out, covered.length ? difference(own, covered) : own, band, groundAt);
     covered = union(covered, own);
   }
   const { i, j } = tileOfKey(records.key);
-  return finish(out, (i + 0.5) * TILE, (j + 0.5) * TILE, TILE_ERROR);
+  return finish(out, (i + 0.5) * TILE, (j + 0.5) * TILE, TILE_ERROR, true);
 }
 
 // ---- the roads of the tiles not made yet, from the generator's plan (as `buildings/farPlan.ts` draws their buildings)
@@ -361,8 +366,9 @@ export const SIMPLIFY_VERTICES = 1 << 15;
  * puts their vertices side by side), so a batch of whole pieces simplifies as they would together, and a level of 16 x 16 tiles grew each
  * baking worker's WebAssembly memory by ~90 MB for good. A piece is never cut: no border made where there was none.
  */
-export function simplifyInParts(index: Uint32Array, position: Float32Array, count: number, error: number): Uint32Array {
-  if (count <= SIMPLIFY_VERTICES) return MeshoptSimplifier.simplify(index, position, 3, 0, error, ['ErrorAbsolute', 'Prune'])[0];
+export function simplifyInParts(index: Uint32Array, position: Float32Array, count: number, error: number, lock = false): Uint32Array {
+  const flags: ('ErrorAbsolute' | 'Prune' | 'LockBorder')[] = lock ? ['ErrorAbsolute', 'Prune', 'LockBorder'] : ['ErrorAbsolute', 'Prune'];
+  if (count <= SIMPLIFY_VERTICES) return MeshoptSimplifier.simplify(index, position, 3, 0, error, flags)[0];
   // The pieces (union-find over each triangle's corners), numbered in the order their first triangle comes.
   const parent = new Int32Array(count);
   for (let v = 0; v < count; v++) parent[v] = v;
@@ -415,7 +421,7 @@ export function simplifyInParts(index: Uint32Array, position: Float32Array, coun
         batchIndex[(n - from) * 3 + c] = local[v]!;
       }
     }
-    const [simpler] = MeshoptSimplifier.simplify(batchIndex, batchPosition.subarray(0, used * 3), 3, 0, error, ['ErrorAbsolute', 'Prune']);
+    const [simpler] = MeshoptSimplifier.simplify(batchIndex, batchPosition.subarray(0, used * 3), 3, 0, error, flags);
     for (let i = 0; i < simpler.length; i++) simpler[i] = global[simpler[i]!]!;
     kept.push(simpler);
     total += simpler.length;
@@ -427,8 +433,8 @@ export function simplifyInParts(index: Uint32Array, position: Float32Array, coun
   return out;
 }
 
-/** DO NOT draw a level whole: simplified to its error (meshoptimizer `simplify`, absolute error, tiny islands pruned, as `mesh/roadLodPure.ts`), its vertices compacted. */
-function finish(out: Builder, ox: number, oy: number, error: number): FarRoadMesh | null {
+/** DO NOT draw a level whole: simplified to its error (meshoptimizer `simplify`, absolute error, tiny islands pruned, as `mesh/roadLodPure.ts`), its vertices compacted; `lock`, each band's outline kept where it is (a tile's level). */
+function finish(out: Builder, ox: number, oy: number, error: number, lock = false): FarRoadMesh | null {
   const count = out.vertices;
   if (out.tris.length === 0) return null;
   const position = new Float32Array(count * 3);
@@ -436,8 +442,21 @@ function finish(out: Builder, ox: number, oy: number, error: number): FarRoadMes
     position[v * 3] = out.x[v]! - ox; position[v * 3 + 1] = out.h[v]!; position[v * 3 + 2] = -(out.y[v]! - oy);
   }
   let kept: Uint32Array = Uint32Array.from(out.tris);
-  // A colour's edge is the border of its band (its own vertices): kept as a border, never collapsed across.
-  if (MeshoptSimplifier.supported) kept = simplifyInParts(kept, position, count, error);
+  // DO NOT simplify the bands together: the simplifier welds vertices by position, and a kerb's strip collapsed across the carriageway beside it, drawn over the asphalt 10 cm up (every far street light grey, 2026-10-18). Each colour alone.
+  if (MeshoptSimplifier.supported) {
+    const byColour = new Map<number, number[]>();
+    for (let t = 0; t < kept.length; t += 3) {
+      const v = kept[t]!;
+      const colour = (out.c[v * 3]! << 16) | (out.c[v * 3 + 1]! << 8) | out.c[v * 3 + 2]!;
+      let list = byColour.get(colour);
+      if (!list) byColour.set(colour, list = []);
+      list.push(kept[t]!, kept[t + 1]!, kept[t + 2]!);
+    }
+    const parts = [...byColour.values()].map((list) => simplifyInParts(Uint32Array.from(list), position, count, error, lock));
+    kept = new Uint32Array(parts.reduce((sum, p) => sum + p.length, 0));
+    let at = 0;
+    for (const part of parts) { kept.set(part, at); at += part.length; }
+  }
   if (kept.length === 0) return null;
   const remap = new Int32Array(count).fill(-1);
   let used = 0;
@@ -511,6 +530,10 @@ export interface FarRoadJob {
   readonly records?: TileRoads;
   /** Level 0: the store's map this worker reads the tile from itself (`core/storedTiles.ts`), in place of `records`. */
   readonly store?: string;
+  /** Level 0: the tiles round it stored, read with it (`bakeTileRoads`), each at its version. */
+  readonly around?: readonly { readonly key: number; readonly version: number }[];
+  /** Level 0, with `records`: the roads of `around` the page read, in that order. */
+  readonly aroundRecords?: readonly TileRoads[];
   /** The ground shared with the workers (`sharedGround.ts`); none: flat at 0. */
   readonly ground?: SharedGroundData | null;
   /** A tile's near level (`nearRoadTiles.ts`): what it reads besides the roads; its node is the tile's under level 0. */
@@ -534,22 +557,18 @@ export type FarRoadReply =
 export const farRoadReplyBuffers = (reply: FarRoadReply): ArrayBuffer[] =>
   (reply.kind === 'far' && reply.payload ? ('near' in reply.payload ? nearRoadBuffers(reply.payload) : farRoadBuffers(reply.payload)) : []);
 
-/** What a node keeps: the version of its tiles and its mesh. */
+/** What a node keeps: the version of its tiles and its mesh; a tile's, the roads it read too (`content`). */
 interface RoadEntry {
   readonly sig: string;
   readonly mesh: FarRoadMesh | null;
+  readonly content?: string;
 }
 
-/** A TILE'S FAR ROADS KEPT WHERE THE TILE WAS JUST MADE (`cityTile.worker.ts`): baked from its stored roads and kept under the key and version the page's job for it asks (`runFarRoadJob` level 0), so no worker reads the tile back to bake them */
-export async function keepTileFarRoads(records: TileRoads, version: number, ground: SharedGroundData | null, prefix: string | null, cache: FarRoadCache = derivedRoadCache): Promise<boolean> {
-  if (prefix === null) return false;
-  // DO NOT simplify before the simplifier's WebAssembly is made (meshoptimizer README, `MeshoptSimplifier.ready`).
-  await MeshoptSimplifier.ready;
-  if (!(await cache.ready())) return false;
-  const { i, j } = tileOfKey(records.key);
-  const entry: RoadEntry = { sig: String(version), mesh: bakeTileRoads(records, ground ? sharedGroundReaders(ground).groundAt : FLAT) };
-  await cache.put(`${prefix}${farKey(0, i, j)}`, entry);
-  return true;
+/** The roads a tile's far bake reads, digested: a neighbour written with the same roads (a building grown) bakes nothing again. */
+function roadsContent(tiles: readonly TileRoads[]): string {
+  const d = new Digest();
+  for (const t of tiles) d.add(t.key).addPlain(t.nodes).addPlain(t.borrowedNodes).addPlain(t.segments);
+  return d.value().toString(36);
 }
 
 /** DO NOT bake what is kept: a node is baked once per version of its tiles (kept under its key with that version), from its tile's records or its children's bakes, never from the page's document */
@@ -580,7 +599,18 @@ export async function runFarRoadJob(job: FarRoadJob, cache: FarRoadCache): Promi
     if (!entry) {
       const records = job.records ?? await readStored(job.store, tileKey(i, j), 'roads');
       if (!records) return { kind: 'farRecords', node, sig };
-      entry = { sig, mesh: bakeTileRoads(records, ground) };
+      const keys = job.around ?? [];
+      let around: TileRoads[];
+      if (job.aroundRecords) around = [...job.aroundRecords];
+      else {
+        const read = await Promise.all(keys.map((t) => readStored(job.store, t.key, 'roads')));
+        // The page read the tile itself and no worker reads the store: theirs from the page too.
+        if (keys.length && read.some((r) => !r) && job.store === undefined) return { kind: 'farRecords', node, sig };
+        around = read.flatMap((r) => (r ? [tileRoads(r)] : []));
+      }
+      const content = roadsContent([tileRoads(records), ...around]);
+      const last = keeps ? await cache.get(`${prefix}${node}`) as RoadEntry | undefined : undefined;
+      entry = last && last.content === content ? { sig, mesh: last.mesh, content } : { sig, mesh: bakeTileRoads(records, around, ground), content };
       if (keeps) await cache.put(`${prefix}${node}`, entry);
     }
     return { kind: 'far', node, sig, payload: job.want ? entry.mesh : null };

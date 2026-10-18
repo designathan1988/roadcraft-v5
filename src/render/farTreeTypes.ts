@@ -52,6 +52,10 @@ export interface FarTreeJob {
   readonly store?: string;
   /** The world's generator options, for a kind that bakes from the plan where no tile is made yet (`PLAN_SIG`). */
   readonly plan?: WholeMapOptions;
+  /** Level 0 of a kind that reads its neighbours (`FarKind.readsAround`): the tiles round it stored, each at its version. */
+  readonly around?: readonly { readonly key: number; readonly version: number }[];
+  /** The page's records of `around` (no worker reads the store), in that order: DO NOT post them whole, as `records`. */
+  readonly aroundRecords?: readonly TileRecords[];
   /** A tile's near level (`FarKind.near`): the tiles it reads, each at its version (the tile first, then its neighbours stored), the version of what it reads (`bake`), the level wanted and the version of it drawn now (`shown`: only what changed since comes back); the page's records of the tiles it holds edited (or of all, where no worker reads the store), in that order, null for one read from the store. */
   readonly near?: {
     readonly tiles: readonly { readonly key: number; readonly version: number }[];
@@ -101,6 +105,8 @@ export interface FarKind<P> {
   readonly planFrom?: number;
   /** A level under the tiles (the roads' near level, `nearRoadTiles.ts`); none: a tile is the finest the tree draws (the buildings', whose cells draw the near). */
   readonly near?: FarNear<P>;
+  /** Whether a tile's own level reads the tiles round it (the roads, cut to the near level's share of the ground, `farRoadTiles.ts` tileShare): their versions are its version too. */
+  readonly readsAround?: boolean;
 }
 
 /** A kind's level under its tiles, at two levels of its own: what a tile's own level leaves out that it draws (`error`, m: wanted where that spans the pixels allowed, as a cell comes near, `massCells.ts`), what its simplified level leaves out (`fineError`: its full detail wanted where that spans them), and its meshes. */

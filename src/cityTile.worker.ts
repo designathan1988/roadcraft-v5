@@ -11,11 +11,9 @@ import type { Building } from '@world/buildings/types';
 import { BAYS_SECTION } from '@sim/tileBays';
 import { NETWORK_SECTION, TRAFFIC_SECTION, bakeTileSections, networkOfSection, tileBaysSection, tileNetworkSection } from '@sim/tileSections';
 import { type FarCache, type FarGroundEnv, keepTileFar } from './render/buildings/farTiles';
-import { type FarRoadCache, keepTileFarRoads, tileRoads } from './render/farRoadTiles';
 import { keepTileNearBuildings } from './render/nearBuildings';
 import type { NearTileCache } from './render/nearTileBake';
 import { WriteBudget, derivedCacheOpen, keepDerivedQueuedMany, readDerived } from '@core/derivedCache';
-import type { SharedGroundData } from './render/sharedGround';
 
 /** This service of the job system (`job.worker.ts`): one tile of the streamed world built off the page (`editor/wholeMapTile.ts`, `world/tiles.ts`), asked for by `tileGenerator.ts`. */
 
@@ -36,9 +34,6 @@ export interface StreamTileAsk {
 /** WHAT A TILE'S MAKER BAKES ITS FAR LEVELS WITH (the page's far trees and buildings layer, `SceneHandle.farBakeEnv`): the ground and tones their jobs read, and the keys they keep a tile's level 0 under (null: that kind keeps nothing) */
 export interface FarTileBake extends FarGroundEnv {
   readonly massPrefix: string | null;
-  readonly roadPrefix: string | null;
-  /** The ground the far roads read (`farRoads.ts`, the terrain's shared ground). */
-  readonly roadGround: SharedGroundData | null;
   /** The key prefix the near products' bakes are kept under (`nearTiles.ts`): the tile's buildings as they read them kept here (`nearBuildings.ts`); null or none: nothing kept. */
   readonly nearPrefix?: string | null;
 }
@@ -50,13 +45,13 @@ const FAR_WRITES_MOST = 48 * 2 ** 20;
 /** Where this worker keeps the far levels it bakes: its write budget, and whether it keeps the derived cache itself (none in a thread of the desktop's job process: no IndexedDB in a utility process, `desktop/jobs.cjs`). */
 interface FarCaches { readonly budget: WriteBudget; readonly ownCache: Promise<boolean> }
 
-/** A tile's far bakes gathered, not written one by one: what `keepTileFar`, `keepTileFarRoads` and `keepTileNearBuildings` put, kept together after (`keepDerivedQueuedMany`). `own`: this thread opens the cache (none: a thread of the desktop's job process, whose bakes go to the page in the answer). */
-function gathered(own: boolean): { readonly far: FarCache; readonly roads: FarRoadCache; readonly near: NearTileCache; readonly entries: [string, unknown][] } {
+/** A tile's far bakes gathered, not written one by one: what `keepTileFar` and `keepTileNearBuildings` put, kept together after (`keepDerivedQueuedMany`). `own`: this thread opens the cache (none: a thread of the desktop's job process, whose bakes go to the page in the answer). */
+function gathered(own: boolean): { readonly far: FarCache; readonly near: NearTileCache; readonly entries: [string, unknown][] } {
   const entries: [string, unknown][] = [];
   const put = (key: string, value: unknown): Promise<void> => { entries.push([key, value]); return Promise.resolve(); };
   const ready = own ? derivedCacheOpen : (): Promise<boolean> => Promise.resolve(true);
   const get = own ? (key: string) => readDerived(key) : (): Promise<null> => Promise.resolve(null);
-  return { far: { ready, get, put }, roads: { ready, get, put }, near: { ready, get, put }, entries };
+  return { far: { ready, get, put }, near: { ready, get, put }, entries };
 }
 
 /** The tile's far levels baked; kept here, or (a thread with no cache of its own) handed back to be kept by the page, in the answer. */
@@ -65,7 +60,7 @@ async function keepFar(records: TileRecords, full: TileRecords, version: number,
   const into = gathered(own);
   const bakes = await Promise.allSettled([
     keepTileFar(full, version, far, far.massPrefix, into.far),
-    keepTileFarRoads(tileRoads(records), version, far.roadGround, far.roadPrefix, into.roads),
+    // DO NOT keep its far roads here: they read the tiles round it (`farRoadTiles.ts` tileShare), most not made yet; the roads' jobs bake them.
     // What the near products read of its buildings (where no plant stands, its gardens' plants): DO NOT leave them to be made again from the rows by every bake that reads the tile.
     keepTileNearBuildings(records, full, version, far.nearPrefix ?? null, into.near),
   ]);

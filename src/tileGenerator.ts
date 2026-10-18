@@ -170,7 +170,7 @@ export class TileGenerator {
         lane.inFlight.push(next);
         const { i, j } = tileOfKey(next.key);
         const far = next.store ? this.far() : null;
-        const tileFar = far ? { ...far, ground: tileGround(far.ground, i, j), roadGround: tileGround(far.roadGround, i, j) } : null;
+        const tileFar = far ? { ...far, ground: tileGround(far.ground, i, j) } : null;
         lane.port.postMessage({ stream: true, options: this.options, i, j, ...(next.store ? { store: { ...next.store, far: tileFar } } : {}) } satisfies StreamTileAsk);
       }
     }
