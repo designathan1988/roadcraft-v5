@@ -112,7 +112,9 @@ export function createSignalHeads(
   const lensGeometry = new CylinderGeometry(LAMP_RADIUS, LAMP_RADIUS, u(0.06), 12).rotateX(
     Math.PI / 2,
   );
-  const haloGeometry = new CylinderGeometry(LAMP_RADIUS * 1.8, LAMP_RADIUS * 1.8, u(0.02), 12)
+  // DO NOT make it wider than the housing's face: a disc past its sides hung off the head, a lens out of its can (look 21-street-zoom, 2026-10-18).
+  const HALO_RADIUS = Math.min(LAMP_RADIUS * 1.8, HEAD_WIDTH / 2 - u(0.015));
+  const haloGeometry = new CylinderGeometry(HALO_RADIUS, HALO_RADIUS, u(0.02), 12)
     .rotateX(Math.PI / 2);
   const visorGeometry = new BoxGeometry(LAMP_RADIUS * 2.5, u(0.06), VISOR_DEPTH);
 
